@@ -1,34 +1,74 @@
-name: Deploy GitHub Pages
+name: Validate site and deploy configured Pages
 
 on:
+  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check static entry point
+        run: test -s index.html
+
+  pages-status:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pages: read
+    outputs:
+      enabled: ${{ steps.pages.outputs.enabled }}
+    steps:
+      - name: Read existing Pages configuration
+        id: pages
+        uses: actions/github-script@v8
+        with:
+          script: |
+            try {
+              const { data } = await github.rest.repos.getPages(context.repo);
+              const enabled = data.build_type === 'workflow';
+              core.setOutput('enabled', String(enabled));
+              if (!enabled) core.notice('Pages is not configured for Actions; deployment skipped without changing settings.');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.setOutput('enabled', 'false');
+              core.notice('Pages is disabled; deployment skipped without enabling a public site.');
+            }
+
   deploy:
+    needs: [validate, pages-status]
+    if: needs.pages-status.outputs.enabled == 'true'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Pages
+      - uses: actions/checkout@v7
+      - name: Setup existing Pages site
         uses: actions/configure-pages@v5
         with:
-          enablement: true
+          enablement: false
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: .
       - name: Deploy
